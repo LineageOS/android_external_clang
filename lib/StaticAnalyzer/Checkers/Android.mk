@@ -6,6 +6,7 @@ clang_static_analyzer_checkers_TBLGEN_TABLES := \
   AttrParsedAttrList.inc \
   Attrs.inc \
   Checkers.inc \
+  CommentCommandList.inc \
   CommentNodes.inc \
   DeclNodes.inc \
   DiagnosticCommonKinds.inc \
@@ -15,7 +16,6 @@ clang_static_analyzer_checkers_SRC_FILES := \
   AnalyzerStatsChecker.cpp \
   ArrayBoundChecker.cpp \
   ArrayBoundCheckerV2.cpp \
-  AttrNonNullChecker.cpp \
   BasicObjCFoundationChecks.cpp \
   BoolAssignmentChecker.cpp \
   BuiltinFunctionChecker.cpp \
@@ -35,12 +35,14 @@ clang_static_analyzer_checkers_SRC_FILES := \
   DeadStoresChecker.cpp \
   DebugCheckers.cpp \
   DereferenceChecker.cpp \
+  DirectIvarAssignment.cpp \
   DivZeroChecker.cpp \
   DynamicTypePropagation.cpp \
   ExprInspectionChecker.cpp \
   FixedAddressChecker.cpp \
   GenericTaintChecker.cpp \
   IdempotentOperationChecker.cpp \
+  IvarInvalidationChecker.cpp \
   LLVMConventionsChecker.cpp \
   MacOSKeychainAPIChecker.cpp \
   MacOSXAPIChecker.cpp \
@@ -50,10 +52,11 @@ clang_static_analyzer_checkers_SRC_FILES := \
   NSAutoreleasePoolChecker.cpp \
   NSErrorChecker.cpp \
   NoReturnFunctionChecker.cpp \
-  OSAtomicChecker.cpp \
+  NonNullParamChecker.cpp \
   ObjCAtSyncChecker.cpp \
   ObjCContainersASTChecker.cpp \
   ObjCContainersChecker.cpp \
+  ObjCMissingSuperCallChecker.cpp \
   ObjCSelfInitChecker.cpp \
   ObjCUnusedIVarsChecker.cpp \
   PointerArithChecker.cpp \
@@ -62,6 +65,7 @@ clang_static_analyzer_checkers_SRC_FILES := \
   RetainCountChecker.cpp \
   ReturnPointerRangeChecker.cpp \
   ReturnUndefChecker.cpp \
+  SimpleStreamChecker.cpp \
   StackAddrEscapeChecker.cpp \
   StreamChecker.cpp \
   TaintTesterChecker.cpp \

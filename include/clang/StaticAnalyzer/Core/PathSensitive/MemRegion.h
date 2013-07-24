@@ -22,8 +22,8 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <string>
 
 namespace llvm {
@@ -140,6 +140,9 @@ public:
 
   const MemRegion *getBaseRegion() const;
 
+  /// Check if the region is a subregion of the given region.
+  virtual bool isSubRegionOf(const MemRegion *R) const;
+
   const MemRegion *StripCasts(bool StripBaseCasts = true) const;
 
   bool hasGlobalsOrParametersStorage() const;
@@ -171,8 +174,6 @@ public:
   template<typename RegionTy> const RegionTy* getAs() const;
 
   virtual bool isBoundable() const { return false; }
-
-  static bool classof(const MemRegion*) { return true; }
 };
 
 /// MemSpaceRegion - A memory region that represents a "memory space";
@@ -416,7 +417,7 @@ public:
 
   MemRegionManager* getMemRegionManager() const;
 
-  bool isSubRegionOf(const MemRegion* R) const;
+  virtual bool isSubRegionOf(const MemRegion* R) const;
 
   static bool classof(const MemRegion* R) {
     return R->getKind() > END_MEMSPACES;
@@ -530,16 +531,28 @@ public:
 
 /// FunctionTextRegion - A region that represents code texts of function.
 class FunctionTextRegion : public CodeTextRegion {
-  const FunctionDecl *FD;
+  const NamedDecl *FD;
 public:
-  FunctionTextRegion(const FunctionDecl *fd, const MemRegion* sreg)
-    : CodeTextRegion(sreg, FunctionTextRegionKind), FD(fd) {}
-  
-  QualType getLocationType() const {
-    return getContext().getPointerType(FD->getType());
+  FunctionTextRegion(const NamedDecl *fd, const MemRegion* sreg)
+    : CodeTextRegion(sreg, FunctionTextRegionKind), FD(fd) {
+    assert(isa<ObjCMethodDecl>(fd) || isa<FunctionDecl>(fd));
   }
   
-  const FunctionDecl *getDecl() const {
+  QualType getLocationType() const {
+    const ASTContext &Ctx = getContext();
+    if (const FunctionDecl *D = dyn_cast<FunctionDecl>(FD)) {
+      return Ctx.getPointerType(D->getType());
+    }
+
+    assert(isa<ObjCMethodDecl>(FD));
+    assert(false && "Getting the type of ObjCMethod is not supported yet");
+
+    // TODO: We might want to return a different type here (ex: id (*ty)(...))
+    //       depending on how it is used.
+    return QualType();
+  }
+
+  const NamedDecl *getDecl() const {
     return FD;
   }
     
@@ -547,7 +560,7 @@ public:
   
   void Profile(llvm::FoldingSetNodeID& ID) const;
   
-  static void ProfileRegion(llvm::FoldingSetNodeID& ID, const FunctionDecl *FD,
+  static void ProfileRegion(llvm::FoldingSetNodeID& ID, const NamedDecl *FD,
                             const MemRegion*);
   
   static bool classof(const MemRegion* R) {
@@ -629,26 +642,20 @@ public:
     explicit referenced_vars_iterator(const MemRegion * const *r,
                                       const MemRegion * const *originalR)
       : R(r), OriginalR(originalR) {}
-    
-    operator const MemRegion * const *() const {
-      return R;
-    }
-  
-    const MemRegion *getCapturedRegion() const {
-      return *R;
-    }
-    const MemRegion *getOriginalRegion() const {
-      return *OriginalR;
-    }
 
-    const VarRegion* operator*() const {
+    const VarRegion *getCapturedRegion() const {
       return cast<VarRegion>(*R);
     }
-    
+    const VarRegion *getOriginalRegion() const {
+      return cast<VarRegion>(*OriginalR);
+    }
+
     bool operator==(const referenced_vars_iterator &I) const {
+      assert((R == 0) == (I.R == 0));
       return I.R == R;
     }
     bool operator!=(const referenced_vars_iterator &I) const {
+      assert((R == 0) == (I.R == 0));
       return I.R != R;
     }
     referenced_vars_iterator &operator++() {
@@ -657,6 +664,10 @@ public:
       return *this;
     }
   };
+
+  /// Return the original region for a captured region, if
+  /// one exists.
+  const VarRegion *getOriginalRegion(const VarRegion *VR) const;
       
   referenced_vars_iterator referenced_vars_begin() const;
   referenced_vars_iterator referenced_vars_end() const;  
@@ -673,6 +684,8 @@ public:
   }
 private:
   void LazyInitializeReferencedVars();
+  std::pair<const VarRegion *, const VarRegion *>
+  getCaptureRegions(const VarDecl *VD);
 };
 
 /// SymbolicRegion - A special, "non-concrete" region. Unlike other region
@@ -939,6 +952,9 @@ public:
   const ObjCIvarDecl *getDecl() const;
   QualType getValueType() const;
 
+  bool canPrintPretty() const;
+  void printPretty(raw_ostream &os) const;
+
   void dumpToStream(raw_ostream &os) const;
 
   static bool classof(const MemRegion* R) {
@@ -980,8 +996,8 @@ class ElementRegion : public TypedValueRegion {
   ElementRegion(QualType elementType, NonLoc Idx, const MemRegion* sReg)
     : TypedValueRegion(sReg, ElementRegionKind),
       ElementType(elementType), Index(Idx) {
-    assert((!isa<nonloc::ConcreteInt>(&Idx) ||
-           cast<nonloc::ConcreteInt>(&Idx)->getValue().isSigned()) &&
+    assert((!Idx.getAs<nonloc::ConcreteInt>() ||
+            Idx.castAs<nonloc::ConcreteInt>().getValue().isSigned()) &&
            "The index must be signed");
   }
 
@@ -1044,16 +1060,18 @@ public:
 class CXXBaseObjectRegion : public TypedValueRegion {
   friend class MemRegionManager;
 
-  const CXXRecordDecl *decl;
+  llvm::PointerIntPair<const CXXRecordDecl *, 1, bool> Data;
 
-  CXXBaseObjectRegion(const CXXRecordDecl *d, const MemRegion *sReg)
-    : TypedValueRegion(sReg, CXXBaseObjectRegionKind), decl(d) {}
+  CXXBaseObjectRegion(const CXXRecordDecl *RD, bool IsVirtual,
+                      const MemRegion *SReg)
+    : TypedValueRegion(SReg, CXXBaseObjectRegionKind), Data(RD, IsVirtual) {}
 
-  static void ProfileRegion(llvm::FoldingSetNodeID &ID,
-                            const CXXRecordDecl *decl, const MemRegion *sReg);
+  static void ProfileRegion(llvm::FoldingSetNodeID &ID, const CXXRecordDecl *RD,
+                            bool IsVirtual, const MemRegion *SReg);
 
 public:
-  const CXXRecordDecl *getDecl() const { return decl; }
+  const CXXRecordDecl *getDecl() const { return Data.getPointer(); }
+  bool isVirtual() const { return Data.getInt(); }
 
   QualType getValueType() const;
 
@@ -1203,18 +1221,24 @@ public:
   const CXXTempObjectRegion *getCXXTempObjectRegion(Expr const *Ex,
                                                     LocationContext const *LC);
 
-  const CXXBaseObjectRegion *getCXXBaseObjectRegion(const CXXRecordDecl *decl,
-                                                  const MemRegion *superRegion);
+  /// Create a CXXBaseObjectRegion with the given base class for region
+  /// \p Super.
+  ///
+  /// The type of \p Super is assumed be a class deriving from \p BaseClass.
+  const CXXBaseObjectRegion *
+  getCXXBaseObjectRegion(const CXXRecordDecl *BaseClass, const MemRegion *Super,
+                         bool IsVirtual);
 
   /// Create a CXXBaseObjectRegion with the same CXXRecordDecl but a different
   /// super region.
   const CXXBaseObjectRegion *
   getCXXBaseObjectRegionWithSuper(const CXXBaseObjectRegion *baseReg, 
                                   const MemRegion *superRegion) {
-    return getCXXBaseObjectRegion(baseReg->getDecl(), superRegion);
+    return getCXXBaseObjectRegion(baseReg->getDecl(), superRegion,
+                                  baseReg->isVirtual());
   }
 
-  const FunctionTextRegion *getFunctionTextRegion(const FunctionDecl *FD);
+  const FunctionTextRegion *getFunctionTextRegion(const NamedDecl *FD);
   const BlockTextRegion *getBlockTextRegion(const BlockDecl *BD,
                                             CanQualType locTy,
                                             AnalysisDeclContext *AC);

@@ -3,6 +3,7 @@ LOCAL_PATH:= $(call my-dir)
 clang_codegen_TBLGEN_TABLES := \
   AttrList.inc \
   Attrs.inc \
+  CommentCommandList.inc \
   CommentNodes.inc \
   DeclNodes.inc \
   DiagnosticCommonKinds.inc \
@@ -12,6 +13,7 @@ clang_codegen_TBLGEN_TABLES := \
 
 clang_codegen_SRC_FILES := \
   BackendUtil.cpp \
+  CGAtomic.cpp \
   CGBlocks.cpp \
   CGBuiltin.cpp \
   CGCUDANV.cpp \

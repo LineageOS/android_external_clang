@@ -13,7 +13,9 @@ add_clang_library(clangSema
   DelayedDiagnostic.cpp
   IdentifierResolver.cpp
   JumpDiagnostics.cpp
+  MultiplexExternalSemaSource.cpp
   Scope.cpp
+  ScopeInfo.cpp
   Sema.cpp
   SemaAccess.cpp
   SemaAttr.cpp
@@ -56,6 +58,7 @@ add_dependencies(clangSema
   ClangAttrList
   ClangAttrParsedAttrList
   ClangAttrParsedAttrKinds
+  ClangAttrSpellingListIndex
   ClangAttrTemplateInstantiate
   ClangCommentNodes
   ClangDeclNodes

@@ -11,17 +11,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CodeGenFunction.h"
 #include "CGDebugInfo.h"
 #include "CodeGenModule.h"
-#include "CodeGenFunction.h"
 #include "TargetInfo.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/InlineAsm.h"
-#include "llvm/Intrinsics.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Intrinsics.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -198,6 +198,12 @@ RValue CodeGenFunction::EmitCompoundStmt(const CompoundStmt &S, bool GetLast,
   // Keep track of the current cleanup stack depth, including debug scopes.
   LexicalScope Scope(*this, S.getSourceRange());
 
+  return EmitCompoundStmtWithoutScope(S, GetLast, AggSlot);
+}
+
+RValue CodeGenFunction::EmitCompoundStmtWithoutScope(const CompoundStmt &S, bool GetLast,
+                                         AggValueSlot AggSlot) {
+
   for (CompoundStmt::const_body_iterator I = S.body_begin(),
        E = S.body_end()-GetLast; I != E; ++I)
     EmitStmt(*I);
@@ -235,6 +241,10 @@ void CodeGenFunction::SimplifyForwardingBlocks(llvm::BasicBlock *BB) {
 
   // Can only simplify direct branches.
   if (!BI || !BI->isUnconditional())
+    return;
+
+  // Can only simplify empty blocks.
+  if (BI != BB->begin())
     return;
 
   BB->replaceAllUsesWith(BI->getSuccessor(0));
@@ -731,7 +741,9 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
   } else if (RV.isAggregate()) {
     EmitAggregateCopy(ReturnValue, RV.getAggregateAddr(), Ty);
   } else {
-    StoreComplexToAddr(RV.getComplexVal(), ReturnValue, false);
+    EmitStoreOfComplex(RV.getComplexVal(),
+                       MakeNaturalAlignAddrLValue(ReturnValue, Ty),
+                       /*init*/ true);
   }
   EmitBranchThroughCleanup(ReturnBlock);
 }
@@ -742,6 +754,17 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
 void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
   // Emit the result value, even if unused, to evalute the side effects.
   const Expr *RV = S.getRetValue();
+
+  // Treat block literals in a return expression as if they appeared
+  // in their own scope.  This permits a small, easily-implemented
+  // exception to our over-conservative rules about not jumping to
+  // statements following block literals with non-trivial cleanups.
+  RunCleanupsScope cleanupScope(*this);
+  if (const ExprWithCleanups *cleanups =
+        dyn_cast_or_null<ExprWithCleanups>(RV)) {
+    enterFullExpression(cleanups);
+    RV = cleanups->getSubExpr();
+  }
 
   // FIXME: Clean this up by using an LValue for ReturnTemp,
   // EmitStoreThroughLValue, and EmitAnyExpr.
@@ -767,18 +790,29 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
     // rather than the value.
     RValue Result = EmitReferenceBindingToExpr(RV, /*InitializedDecl=*/0);
     Builder.CreateStore(Result.getScalarVal(), ReturnValue);
-  } else if (!hasAggregateLLVMType(RV->getType())) {
-    Builder.CreateStore(EmitScalarExpr(RV), ReturnValue);
-  } else if (RV->getType()->isAnyComplexType()) {
-    EmitComplexExprIntoAddr(RV, ReturnValue, false);
   } else {
-    CharUnits Alignment = getContext().getTypeAlignInChars(RV->getType());
-    EmitAggExpr(RV, AggValueSlot::forAddr(ReturnValue, Alignment, Qualifiers(),
-                                          AggValueSlot::IsDestructed,
-                                          AggValueSlot::DoesNotNeedGCBarriers,
-                                          AggValueSlot::IsNotAliased));
+    switch (getEvaluationKind(RV->getType())) {
+    case TEK_Scalar:
+      Builder.CreateStore(EmitScalarExpr(RV), ReturnValue);
+      break;
+    case TEK_Complex:
+      EmitComplexExprIntoLValue(RV,
+                     MakeNaturalAlignAddrLValue(ReturnValue, RV->getType()),
+                                /*isInit*/ true);
+      break;
+    case TEK_Aggregate: {
+      CharUnits Alignment = getContext().getTypeAlignInChars(RV->getType());
+      EmitAggExpr(RV, AggValueSlot::forAddr(ReturnValue, Alignment,
+                                            Qualifiers(),
+                                            AggValueSlot::IsDestructed,
+                                            AggValueSlot::DoesNotNeedGCBarriers,
+                                            AggValueSlot::IsNotAliased));
+      break;
+    }
+    }
   }
 
+  cleanupScope.ForceCleanup();
   EmitBranchThroughCleanup(ReturnBlock);
 }
 
@@ -1264,6 +1298,10 @@ SimplifyConstraint(const char *Constraint, const TargetInfo &Target,
     case '=': // Will see this and the following in mult-alt constraints.
     case '+':
       break;
+    case '#': // Ignore the rest of the constraint alternative.
+      while (Constraint[1] && Constraint[1] != ',')
+	Constraint++;
+      break;
     case ',':
       Result += "|";
       break;
@@ -1329,11 +1367,11 @@ CodeGenFunction::EmitAsmInputLValue(const TargetInfo::ConstraintInfo &Info,
                                     std::string &ConstraintStr) {
   llvm::Value *Arg;
   if (Info.allowsRegister() || !Info.allowsMemory()) {
-    if (!CodeGenFunction::hasAggregateLLVMType(InputType)) {
+    if (CodeGenFunction::hasScalarEvaluationKind(InputType)) {
       Arg = EmitLoadOfLValue(InputValue).getScalarVal();
     } else {
       llvm::Type *Ty = ConvertType(InputType);
-      uint64_t Size = CGM.getTargetData().getTypeSizeInBits(Ty);
+      uint64_t Size = CGM.getDataLayout().getTypeSizeInBits(Ty);
       if (Size <= 64 && llvm::isPowerOf2_64(Size)) {
         Ty = llvm::IntegerType::get(getLLVMContext(), Size);
         Ty = llvm::PointerType::getUnqual(Ty);
@@ -1358,7 +1396,7 @@ llvm::Value* CodeGenFunction::EmitAsmInput(
                                            const Expr *InputExpr,
                                            std::string &ConstraintStr) {
   if (Info.allowsRegister() || !Info.allowsMemory())
-    if (!CodeGenFunction::hasAggregateLLVMType(InputExpr->getType()))
+    if (CodeGenFunction::hasScalarEvaluationKind(InputExpr->getType()))
       return EmitScalarExpr(InputExpr);
 
   InputExpr = InputExpr->IgnoreParenNoopCasts(getContext());
@@ -1453,7 +1491,7 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
 
     // If this is a register output, then make the inline asm return it
     // by-value.  If this is a memory result, return the value by-reference.
-    if (!Info.allowsMemory() && !hasAggregateLLVMType(OutExpr->getType())) {
+    if (!Info.allowsMemory() && hasScalarEvaluationKind(OutExpr->getType())) {
       Constraints += "=" + OutputConstraint;
       ResultRegQualTys.push_back(OutExpr->getType());
       ResultRegDests.push_back(Dest);
@@ -1620,7 +1658,8 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
     llvm::InlineAsm::get(FTy, AsmString, Constraints, HasSideEffect,
                          /* IsAlignStack */ false, AsmDialect);
   llvm::CallInst *Result = Builder.CreateCall(IA, Args);
-  Result->addAttribute(~0, llvm::Attribute::NoUnwind);
+  Result->addAttribute(llvm::AttributeSet::FunctionIndex,
+                       llvm::Attribute::NoUnwind);
 
   // Slap the source location of the inline asm into a !srcloc metadata on the
   // call.  FIXME: Handle metadata for MS-style inline asms.
@@ -1652,12 +1691,12 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
       if (TruncTy->isFloatingPointTy())
         Tmp = Builder.CreateFPTrunc(Tmp, TruncTy);
       else if (TruncTy->isPointerTy() && Tmp->getType()->isIntegerTy()) {
-        uint64_t ResSize = CGM.getTargetData().getTypeSizeInBits(TruncTy);
+        uint64_t ResSize = CGM.getDataLayout().getTypeSizeInBits(TruncTy);
         Tmp = Builder.CreateTrunc(Tmp,
                    llvm::IntegerType::get(getLLVMContext(), (unsigned)ResSize));
         Tmp = Builder.CreateIntToPtr(Tmp, TruncTy);
       } else if (Tmp->getType()->isPointerTy() && TruncTy->isIntegerTy()) {
-        uint64_t TmpSize =CGM.getTargetData().getTypeSizeInBits(Tmp->getType());
+        uint64_t TmpSize =CGM.getDataLayout().getTypeSizeInBits(Tmp->getType());
         Tmp = Builder.CreatePtrToInt(Tmp,
                    llvm::IntegerType::get(getLLVMContext(), (unsigned)TmpSize));
         Tmp = Builder.CreateTrunc(Tmp, TruncTy);

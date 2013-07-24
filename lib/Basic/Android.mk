@@ -22,8 +22,7 @@ TBLGEN_TABLES := \
 
 clang_basic_SRC_FILES := \
   Builtins.cpp \
-  ConvertUTF.c \
-  ConvertUTFWrapper.cpp \
+  CharInfo.cpp \
   Diagnostic.cpp \
   DiagnosticIDs.cpp \
   FileManager.cpp \
@@ -32,6 +31,7 @@ clang_basic_SRC_FILES := \
   LangOptions.cpp \
   Module.cpp \
   ObjCRuntime.cpp \
+  OperatorPrecedence.cpp \
   SourceLocation.cpp \
   SourceManager.cpp \
   TargetInfo.cpp \

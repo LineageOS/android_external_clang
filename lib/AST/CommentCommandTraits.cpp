@@ -15,9 +15,21 @@ namespace comments {
 
 #include "clang/AST/CommentCommandInfo.inc"
 
-CommandTraits::CommandTraits(llvm::BumpPtrAllocator &Allocator) :
-    NextID(llvm::array_lengthof(Commands)), Allocator(Allocator)
-{ }
+CommandTraits::CommandTraits(llvm::BumpPtrAllocator &Allocator,
+                             const CommentOptions &CommentOptions) :
+    NextID(llvm::array_lengthof(Commands)), Allocator(Allocator) {
+  registerCommentOptions(CommentOptions);
+}
+
+void CommandTraits::registerCommentOptions(
+    const CommentOptions &CommentOptions) {
+  for (CommentOptions::BlockCommandNamesTy::const_iterator
+           I = CommentOptions.BlockCommandNames.begin(),
+           E = CommentOptions.BlockCommandNames.end();
+       I != E; I++) {
+    registerBlockCommand(*I);
+  }
+}
 
 const CommandInfo *CommandTraits::getCommandInfoOrNULL(StringRef Name) const {
   if (const CommandInfo *Info = getBuiltinCommandInfo(Name))
@@ -31,10 +43,10 @@ const CommandInfo *CommandTraits::getCommandInfo(unsigned CommandID) const {
   return getRegisteredCommandInfo(CommandID);
 }
 
-const CommandInfo *CommandTraits::registerUnknownCommand(StringRef CommandName) {
-  char *Name = Allocator.Allocate<char>(CommandName.size());
+CommandInfo *CommandTraits::createCommandInfoWithName(StringRef CommandName) {
+  char *Name = Allocator.Allocate<char>(CommandName.size() + 1);
   memcpy(Name, CommandName.data(), CommandName.size());
-  Name[CommandName.size() + 1] = '\0';
+  Name[CommandName.size()] = '\0';
 
   // Value-initialize (=zero-initialize in this case) a new CommandInfo.
   CommandInfo *Info = new (Allocator) CommandInfo();
@@ -43,6 +55,19 @@ const CommandInfo *CommandTraits::registerUnknownCommand(StringRef CommandName) 
 
   RegisteredCommands.push_back(Info);
 
+  return Info;
+}
+
+const CommandInfo *CommandTraits::registerUnknownCommand(
+                                                  StringRef CommandName) {
+  CommandInfo *Info = createCommandInfoWithName(CommandName);
+  Info->IsUnknownCommand = true;
+  return Info;
+}
+
+const CommandInfo *CommandTraits::registerBlockCommand(StringRef CommandName) {
+  CommandInfo *Info = createCommandInfoWithName(CommandName);
+  Info->IsBlockCommand = true;
   return Info;
 }
 

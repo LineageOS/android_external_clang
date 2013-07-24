@@ -8,6 +8,7 @@ include $(CLEAR_TBLGEN_VARS)
 TBLGEN_TABLES := \
   AttrList.inc \
   Attrs.inc \
+  CommentCommandList.inc \
   CommentNodes.inc \
   DeclNodes.inc \
   DiagnosticCommonKinds.inc \
@@ -16,6 +17,7 @@ TBLGEN_TABLES := \
 
 clang_analysis_SRC_FILES := \
   AnalysisDeclContext.cpp \
+  BodyFarm.cpp \
   CallGraph.cpp \
   CFG.cpp \
   CFGReachabilityAnalysis.cpp \
@@ -24,6 +26,7 @@ clang_analysis_SRC_FILES := \
   Dominators.cpp \
   FormatString.cpp \
   LiveVariables.cpp \
+  ObjCNoReturn.cpp \
   PostOrderCFGView.cpp \
   PrintfFormatString.cpp \
   ProgramPoint.cpp \

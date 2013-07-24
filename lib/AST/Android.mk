@@ -6,10 +6,13 @@ include $(CLEAR_VARS)
 include $(CLEAR_TBLGEN_VARS)
 
 TBLGEN_TABLES :=    \
+	AttrDump.inc	\
 	AttrImpl.inc	\
 	AttrList.inc	\
 	Attrs.inc	\
 	CommentCommandInfo.inc \
+	CommentCommandList.inc \
+	CommentHTMLNamedCharacterReferences.inc \
 	CommentHTMLTags.inc \
 	CommentHTMLTagsProperties.inc \
 	CommentNodes.inc \
@@ -25,12 +28,12 @@ clang_ast_SRC_FILES :=	\
 	ASTConsumer.cpp	\
 	ASTContext.cpp	\
 	ASTDiagnostic.cpp	\
+	ASTDumper.cpp	\
 	ASTImporter.cpp	\
 	AttrImpl.cpp	\
 	Comment.cpp \
 	CommentBriefParser.cpp \
 	CommentCommandTraits.cpp \
-	CommentDumper.cpp \
 	CommentLexer.cpp \
 	CommentParser.cpp \
 	CommentSema.cpp \
@@ -65,7 +68,6 @@ clang_ast_SRC_FILES :=	\
 	RawCommentList.cpp \
 	SelectorLocationsKind.cpp \
 	Stmt.cpp	\
-	StmtDumper.cpp	\
 	StmtIterator.cpp	\
 	StmtPrinter.cpp	\
 	StmtProfile.cpp	\

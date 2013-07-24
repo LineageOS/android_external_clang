@@ -10,7 +10,9 @@ TBLGEN_TABLES :=    \
 	Attrs.inc	\
 	AttrParsedAttrKinds.inc    \
 	AttrParsedAttrList.inc    \
+	AttrSpellingListIndex.inc \
 	AttrTemplateInstantiate.inc	\
+	CommentCommandList.inc \
 	CommentNodes.inc \
 	DeclNodes.inc	\
 	DiagnosticASTKinds.inc	\
@@ -29,7 +31,9 @@ clang_sema_SRC_FILES :=	\
 	IdentifierResolver.cpp	\
 	DelayedDiagnostic.cpp \
 	JumpDiagnostics.cpp	\
+	MultiplexExternalSemaSource.cpp \
 	Scope.cpp \
+	ScopeInfo.cpp \
 	Sema.cpp	\
 	SemaAccess.cpp	\
 	SemaAttr.cpp	\

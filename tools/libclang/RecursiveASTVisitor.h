@@ -535,7 +535,7 @@ bool RecursiveASTVisitor<Derived>::TraverseTypeLoc(TypeLoc TL) {
 #define ABSTRACT_TYPELOC(CLASS, BASE)
 #define TYPELOC(CLASS, BASE) \
   case TypeLoc::CLASS: \
-    return getDerived().Traverse##CLASS##TypeLoc(*cast<CLASS##TypeLoc>(&TL));
+    return getDerived().Traverse##CLASS##TypeLoc(TL.castAs<CLASS##TypeLoc>());
 #include "clang/AST/TypeLocNodes.def"
   }
 
@@ -657,6 +657,7 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateArgument(
   case TemplateArgument::Null:
   case TemplateArgument::Declaration:
   case TemplateArgument::Integral:
+  case TemplateArgument::NullPtr:
     return true;
 
   case TemplateArgument::Type:
@@ -689,6 +690,7 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateArgumentLoc(
   case TemplateArgument::Null:
   case TemplateArgument::Declaration:
   case TemplateArgument::Integral:
+  case TemplateArgument::NullPtr:
     return true;
 
   case TemplateArgument::Type: {
@@ -1196,6 +1198,8 @@ DEF_TRAVERSE_DECL(BlockDecl, {
     // is skipped - don't remove it.
     return true;
   })
+
+DEF_TRAVERSE_DECL(EmptyDecl, { })
 
 DEF_TRAVERSE_DECL(FileScopeAsmDecl, {
     TRY_TO(TraverseStmt(D->getAsmString()));
@@ -2025,8 +2029,7 @@ bool RecursiveASTVisitor<Derived>::TraverseLambdaExpr(LambdaExpr *S) {
     if (S->hasExplicitParameters() && S->hasExplicitResultType()) {
       // Visit the whole type.
       TRY_TO(TraverseTypeLoc(TL));
-    } else if (isa<FunctionProtoTypeLoc>(TL)) {
-      FunctionProtoTypeLoc Proto = cast<FunctionProtoTypeLoc>(TL);
+    } else if (FunctionProtoTypeLoc Proto = TL.getAs<FunctionProtoTypeLoc>()) {
       if (S->hasExplicitParameters()) {
         // Visit parameters.
         for (unsigned I = 0, N = Proto.getNumArgs(); I != N; ++I) {
@@ -2141,6 +2144,7 @@ DEF_TRAVERSE_STMT(PackExpansionExpr, { })
 DEF_TRAVERSE_STMT(SizeOfPackExpr, { })
 DEF_TRAVERSE_STMT(SubstNonTypeTemplateParmPackExpr, { })
 DEF_TRAVERSE_STMT(SubstNonTypeTemplateParmExpr, { })
+DEF_TRAVERSE_STMT(FunctionParmPackExpr, { })
 DEF_TRAVERSE_STMT(MaterializeTemporaryExpr, { })
 DEF_TRAVERSE_STMT(AtomicExpr, { })
 

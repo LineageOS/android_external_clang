@@ -15,12 +15,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
-#include "clang/Sema/Initialization.h"
-#include "clang/AST/ExprCXX.h"
-#include "clang/AST/ExprObjC.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CXXInheritance.h"
+#include "clang/AST/ExprCXX.h"
+#include "clang/AST/ExprObjC.h"
 #include "clang/Basic/PartialDiagnostic.h"
+#include "clang/Sema/Initialization.h"
 #include "llvm/ADT/SmallVector.h"
 #include <set>
 using namespace clang;
@@ -258,7 +258,8 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
     }
     return Op.complete(CXXConstCastExpr::Create(Context, Op.ResultType,
                                   Op.ValueKind, Op.SrcExpr.take(), DestTInfo,
-                                                OpLoc, Parens.getEnd()));
+                                                OpLoc, Parens.getEnd(),
+                                                AngleBrackets));
 
   case tok::kw_dynamic_cast: {
     if (!TypeDependent) {
@@ -269,7 +270,8 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
     return Op.complete(CXXDynamicCastExpr::Create(Context, Op.ResultType,
                                     Op.ValueKind, Op.Kind, Op.SrcExpr.take(),
                                                   &Op.BasePath, DestTInfo,
-                                                  OpLoc, Parens.getEnd()));
+                                                  OpLoc, Parens.getEnd(),
+                                                  AngleBrackets));
   }
   case tok::kw_reinterpret_cast: {
     if (!TypeDependent) {
@@ -280,7 +282,8 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
     return Op.complete(CXXReinterpretCastExpr::Create(Context, Op.ResultType,
                                     Op.ValueKind, Op.Kind, Op.SrcExpr.take(),
                                                       0, DestTInfo, OpLoc,
-                                                      Parens.getEnd()));
+                                                      Parens.getEnd(),
+                                                      AngleBrackets));
   }
   case tok::kw_static_cast: {
     if (!TypeDependent) {
@@ -292,7 +295,8 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
     return Op.complete(CXXStaticCastExpr::Create(Context, Op.ResultType,
                                    Op.ValueKind, Op.Kind, Op.SrcExpr.take(),
                                                  &Op.BasePath, DestTInfo,
-                                                 OpLoc, Parens.getEnd()));
+                                                 OpLoc, Parens.getEnd(),
+                                                 AngleBrackets));
   }
   }
 }
@@ -1479,6 +1483,8 @@ void Sema::CheckCompatibleReinterpretCast(QualType SrcType, QualType DestType,
 static void DiagnoseCastOfObjCSEL(Sema &Self, const ExprResult &SrcExpr,
                                   QualType DestType) {
   QualType SrcType = SrcExpr.get()->getType();
+  if (Self.Context.hasSameType(SrcType, DestType))
+    return;
   if (const PointerType *SrcPtrTy = SrcType->getAs<PointerType>())
     if (SrcPtrTy->isObjCSelType()) {
       QualType DT = DestType;
@@ -1489,6 +1495,22 @@ static void DiagnoseCastOfObjCSEL(Sema &Self, const ExprResult &SrcExpr,
                   diag::warn_cast_pointer_from_sel)
         << SrcType << DestType << SrcExpr.get()->getSourceRange();
     }
+}
+
+static void checkIntToPointerCast(bool CStyle, SourceLocation Loc,
+                                  const Expr *SrcExpr, QualType DestType,
+                                  Sema &Self) {
+  QualType SrcType = SrcExpr->getType();
+
+  // Not warning on reinterpret_cast, boolean, constant expressions, etc
+  // are not explicit design choices, but consistent with GCC's behavior.
+  // Feel free to modify them if you've reason/evidence for an alternative.
+  if (CStyle && SrcType->isIntegralType(Self.Context)
+      && !SrcType->isBooleanType()
+      && !SrcType->isEnumeralType()
+      && !SrcExpr->isIntegerConstantExpr(Self.Context)
+      && Self.Context.getTypeSize(DestType) > Self.Context.getTypeSize(SrcType))
+    Self.Diag(Loc, diag::warn_int_to_pointer_cast) << SrcType << DestType;
 }
 
 static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
@@ -1689,6 +1711,8 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
 
   if (SrcType->isIntegralOrEnumerationType()) {
     assert(destIsPtr && "One type must be a pointer");
+    checkIntToPointerCast(CStyle, OpRange.getBegin(), SrcExpr.get(), DestType,
+                          Self);
     // C++ 5.2.10p5: A value of integral or enumeration type can be explicitly
     //   converted to a pointer.
     // C++ 5.2.10p9: [Note: ...a null pointer constant of integral type is not
@@ -1755,7 +1779,7 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
     // FIXME: Conditionally-supported behavior should be configurable in the
     // TargetInfo or similar.
     Self.Diag(OpRange.getBegin(),
-              Self.getLangOpts().CPlusPlus0x ?
+              Self.getLangOpts().CPlusPlus11 ?
                 diag::warn_cxx98_compat_cast_fn_obj : diag::ext_cast_fn_obj)
       << OpRange;
     return TC_Success;
@@ -1764,7 +1788,7 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
   if (DestType->isFunctionPointerType()) {
     // See above.
     Self.Diag(OpRange.getBegin(),
-              Self.getLangOpts().CPlusPlus0x ?
+              Self.getLangOpts().CPlusPlus11 ?
                 diag::warn_cxx98_compat_cast_fn_obj : diag::ext_cast_fn_obj)
       << OpRange;
     return TC_Success;
@@ -2071,11 +2095,22 @@ void CastOperation::CheckCStyleCast() {
       SrcExpr = ExprError();
       return;
     }
+    checkIntToPointerCast(/* CStyle */ true, OpRange.getBegin(), SrcExpr.get(),
+                          DestType, Self);
   } else if (!SrcType->isArithmeticType()) {
     if (!DestType->isIntegralType(Self.Context) &&
         DestType->isArithmeticType()) {
       Self.Diag(SrcExpr.get()->getLocStart(),
            diag::err_cast_pointer_to_non_pointer_int)
+        << DestType << SrcExpr.get()->getSourceRange();
+      SrcExpr = ExprError();
+      return;
+    }
+  }
+
+  if (Self.getLangOpts().OpenCL && !Self.getOpenCLOptions().cl_khr_fp16) {
+    if (DestType->isHalfType()) {
+      Self.Diag(SrcExpr.get()->getLocStart(), diag::err_opencl_cast_to_half)
         << DestType << SrcExpr.get()->getSourceRange();
       SrcExpr = ExprError();
       return;

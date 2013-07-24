@@ -14,23 +14,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclObjC.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/ExprObjC.h"
+#include "clang/AST/StmtObjC.h"
 #include "clang/Analysis/DomainSpecific/CocoaConventions.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
-#include "clang/AST/DeclObjC.h"
-#include "clang/AST/Expr.h"
-#include "clang/AST/ExprObjC.h"
-#include "clang/AST/StmtObjC.h"
-#include "clang/AST/ASTContext.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 using namespace ento;
@@ -83,7 +84,7 @@ static FoundationClass findKnownClass(const ObjCInterfaceDecl *ID) {
 }
 
 static inline bool isNil(SVal X) {
-  return isa<loc::ConcreteInt>(X);
+  return X.getAs<loc::ConcreteInt>().hasValue();
 }
 
 //===----------------------------------------------------------------------===//
@@ -117,7 +118,7 @@ void NilArgChecker::WarnNilArg(CheckerContext &C,
 
     BugReport *R = new BugReport(*BT, os.str(), N);
     R->addRange(msg.getArgSourceRange(Arg));
-    C.EmitReport(R);
+    C.emitReport(R);
   }
 }
 
@@ -126,8 +127,13 @@ void NilArgChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
   const ObjCInterfaceDecl *ID = msg.getReceiverInterface();
   if (!ID)
     return;
-  
-  if (findKnownClass(ID) == FC_NSString) {
+
+  FoundationClass Class = findKnownClass(ID);
+
+  static const unsigned InvalidArgIndex = UINT_MAX;
+  unsigned Arg = InvalidArgIndex;
+
+  if (Class == FC_NSString) {
     Selector S = msg.getSelector();
     
     if (S.isUnarySelector())
@@ -151,10 +157,34 @@ void NilArgChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
         Name == "compare:options:range:locale:" ||
         Name == "componentsSeparatedByCharactersInSet:" ||
         Name == "initWithFormat:") {
-      if (isNil(msg.getArgSVal(0)))
-        WarnNilArg(C, msg, 0);
+      Arg = 0;
+    }
+  } else if (Class == FC_NSArray) {
+    Selector S = msg.getSelector();
+
+    if (S.isUnarySelector())
+      return;
+
+    if (S.getNameForSlot(0).equals("addObject")) {
+      Arg = 0;
+    } else if (S.getNameForSlot(0).equals("insertObject") &&
+               S.getNameForSlot(1).equals("atIndex")) {
+      Arg = 0;
+    } else if (S.getNameForSlot(0).equals("replaceObjectAtIndex") &&
+               S.getNameForSlot(1).equals("withObject")) {
+      Arg = 1;
+    } else if (S.getNameForSlot(0).equals("setObject") &&
+               S.getNameForSlot(1).equals("atIndexedSubscript")) {
+      Arg = 0;
+    } else if (S.getNameForSlot(0).equals("arrayByAddingObject")) {
+      Arg = 0;
     }
   }
+
+  // If argument is '0', report a warning.
+  if ((Arg != InvalidArgIndex) && isNil(msg.getArgSVal(Arg)))
+    WarnNilArg(C, msg, Arg);
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -195,28 +225,6 @@ enum CFNumberType {
   kCFNumberCGFloatType = 16
 };
 
-namespace {
-  template<typename T>
-  class Optional {
-    bool IsKnown;
-    T Val;
-  public:
-    Optional() : IsKnown(false), Val(0) {}
-    Optional(const T& val) : IsKnown(true), Val(val) {}
-
-    bool isKnown() const { return IsKnown; }
-
-    const T& getValue() const {
-      assert (isKnown());
-      return Val;
-    }
-
-    operator const T&() const {
-      return getValue();
-    }
-  };
-}
-
 static Optional<uint64_t> GetCFNumberSize(ASTContext &Ctx, uint64_t i) {
   static const unsigned char FixedSize[] = { 8, 16, 32, 64, 32, 64 };
 
@@ -238,7 +246,7 @@ static Optional<uint64_t> GetCFNumberSize(ASTContext &Ctx, uint64_t i) {
     case kCFNumberCGFloatType:
       // FIXME: We need a way to map from names to Type*.
     default:
-      return Optional<uint64_t>();
+      return None;
   }
 
   return Ctx.getTypeSize(T);
@@ -289,16 +297,18 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
 
   // FIXME: We really should allow ranges of valid theType values, and
   //   bifurcate the state appropriately.
-  nonloc::ConcreteInt* V = dyn_cast<nonloc::ConcreteInt>(&TheTypeVal);
+  Optional<nonloc::ConcreteInt> V = TheTypeVal.getAs<nonloc::ConcreteInt>();
   if (!V)
     return;
 
   uint64_t NumberKind = V->getValue().getLimitedValue();
-  Optional<uint64_t> TargetSize = GetCFNumberSize(Ctx, NumberKind);
+  Optional<uint64_t> OptTargetSize = GetCFNumberSize(Ctx, NumberKind);
 
   // FIXME: In some cases we can emit an error.
-  if (!TargetSize.isKnown())
+  if (!OptTargetSize)
     return;
+
+  uint64_t TargetSize = *OptTargetSize;
 
   // Look at the value of the integer being passed by reference.  Essentially
   // we want to catch cases where the value passed in is not equal to the
@@ -307,7 +317,7 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
 
   // FIXME: Eventually we should handle arbitrary locations.  We can do this
   //  by having an enhanced memory model that does low-level typing.
-  loc::MemRegionVal* LV = dyn_cast<loc::MemRegionVal>(&TheValueExpr);
+  Optional<loc::MemRegionVal> LV = TheValueExpr.getAs<loc::MemRegionVal>();
   if (!LV)
     return;
 
@@ -358,20 +368,20 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
     
     BugReport *report = new BugReport(*BT, os.str(), N);
     report->addRange(CE->getArg(2)->getSourceRange());
-    C.EmitReport(report);
+    C.emitReport(report);
   }
 }
 
 //===----------------------------------------------------------------------===//
-// CFRetain/CFRelease checking for null arguments.
+// CFRetain/CFRelease/CFMakeCollectable checking for null arguments.
 //===----------------------------------------------------------------------===//
 
 namespace {
 class CFRetainReleaseChecker : public Checker< check::PreStmt<CallExpr> > {
   mutable OwningPtr<APIMisuse> BT;
-  mutable IdentifierInfo *Retain, *Release;
+  mutable IdentifierInfo *Retain, *Release, *MakeCollectable;
 public:
-  CFRetainReleaseChecker(): Retain(0), Release(0) {}
+  CFRetainReleaseChecker(): Retain(0), Release(0), MakeCollectable(0) {}
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
 };
 } // end anonymous namespace
@@ -392,27 +402,30 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     ASTContext &Ctx = C.getASTContext();
     Retain = &Ctx.Idents.get("CFRetain");
     Release = &Ctx.Idents.get("CFRelease");
-    BT.reset(new APIMisuse("null passed to CFRetain/CFRelease"));
+    MakeCollectable = &Ctx.Idents.get("CFMakeCollectable");
+    BT.reset(
+      new APIMisuse("null passed to CFRetain/CFRelease/CFMakeCollectable"));
   }
 
-  // Check if we called CFRetain/CFRelease.
+  // Check if we called CFRetain/CFRelease/CFMakeCollectable.
   const IdentifierInfo *FuncII = FD->getIdentifier();
-  if (!(FuncII == Retain || FuncII == Release))
+  if (!(FuncII == Retain || FuncII == Release || FuncII == MakeCollectable))
     return;
 
   // FIXME: The rest of this just checks that the argument is non-null.
-  // It should probably be refactored and combined with AttrNonNullChecker.
+  // It should probably be refactored and combined with NonNullParamChecker.
 
   // Get the argument's value.
   const Expr *Arg = CE->getArg(0);
   SVal ArgVal = state->getSVal(Arg, C.getLocationContext());
-  DefinedSVal *DefArgVal = dyn_cast<DefinedSVal>(&ArgVal);
+  Optional<DefinedSVal> DefArgVal = ArgVal.getAs<DefinedSVal>();
   if (!DefArgVal)
     return;
 
   // Get a NULL value.
   SValBuilder &svalBuilder = C.getSValBuilder();
-  DefinedSVal zero = cast<DefinedSVal>(svalBuilder.makeZeroVal(Arg->getType()));
+  DefinedSVal zero =
+      svalBuilder.makeZeroVal(Arg->getType()).castAs<DefinedSVal>();
 
   // Make an expression asserting that they're equal.
   DefinedOrUnknownSVal ArgIsNull = svalBuilder.evalEQ(state, zero, *DefArgVal);
@@ -426,14 +439,20 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     if (!N)
       return;
 
-    const char *description = (FuncII == Retain)
-                            ? "Null pointer argument in call to CFRetain"
-                            : "Null pointer argument in call to CFRelease";
+    const char *description;
+    if (FuncII == Retain)
+      description = "Null pointer argument in call to CFRetain";
+    else if (FuncII == Release)
+      description = "Null pointer argument in call to CFRelease";
+    else if (FuncII == MakeCollectable)
+      description = "Null pointer argument in call to CFMakeCollectable";
+    else
+      llvm_unreachable("impossible case");
 
     BugReport *report = new BugReport(*BT, description, N);
     report->addRange(Arg->getSourceRange());
     bugreporter::trackNullOrUndefValue(N, Arg, *report);
-    C.EmitReport(report);
+    C.emitReport(report);
     return;
   }
 
@@ -491,7 +510,7 @@ void ClassReleaseChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
   
     BugReport *report = new BugReport(*BT, os.str(), N);
     report->addRange(msg.getSourceRange());
-    C.EmitReport(report);
+    C.emitReport(report);
   }
 }
 
@@ -597,7 +616,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     return;
 
   // Verify that all arguments have Objective-C types.
-  llvm::Optional<ExplodedNode*> errorNode;
+  Optional<ExplodedNode*> errorNode;
   ProgramStateRef state = C.getState();
   
   for (unsigned I = variadicArgsBegin; I != variadicArgsEnd; ++I) {
@@ -610,7 +629,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
       continue;
 
     // Ignore pointer constants.
-    if (isa<loc::ConcreteInt>(msg.getArgSVal(I)))
+    if (msg.getArgSVal(I).getAs<loc::ConcreteInt>())
       continue;
     
     // Ignore pointer types annotated with 'NSObject' attribute.
@@ -644,7 +663,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
 
     BugReport *R = new BugReport(*BT, os.str(), errorNode.getValue());
     R->addRange(msg.getArgSourceRange(I));
-    C.EmitReport(R);
+    C.emitReport(R);
   }
 }
 
@@ -707,12 +726,12 @@ void ObjCLoopChecker::checkPostStmt(const ObjCForCollectionStmt *FCS,
     ElementVar = State->getSVal(Element, C.getLocationContext());
   }
 
-  if (!isa<Loc>(ElementVar))
+  if (!ElementVar.getAs<Loc>())
     return;
 
   // Go ahead and assume the value is non-nil.
-  SVal Val = State->getSVal(cast<Loc>(ElementVar));
-  State = State->assume(cast<DefinedOrUnknownSVal>(Val), true);
+  SVal Val = State->getSVal(ElementVar.castAs<Loc>());
+  State = State->assume(Val.castAs<DefinedOrUnknownSVal>(), true);
   C.addTransition(State);
 }
 
@@ -736,7 +755,7 @@ static ProgramStateRef assumeExprIsNonNull(const Expr *NonNullExpr,
                                            ProgramStateRef State,
                                            CheckerContext &C) {
   SVal Val = State->getSVal(NonNullExpr, C.getLocationContext());
-  if (DefinedOrUnknownSVal *DV = dyn_cast<DefinedOrUnknownSVal>(&Val))
+  if (Optional<DefinedOrUnknownSVal> DV = Val.getAs<DefinedOrUnknownSVal>())
     return State->assume(*DV, true);
   return State;
 }
@@ -763,7 +782,7 @@ void ObjCNonNilReturnValueChecker::checkPostObjCMessage(const ObjCMethodCall &M,
     // since 'nil' is rarely returned in practice, we should not warn when the
     // caller to the defensive constructor uses the object in contexts where
     // 'nil' is not accepted.
-    if (C.isWithinInlined() &&
+    if (!C.inTopFrame() && M.getDecl() &&
         M.getDecl()->getMethodFamily() == OMF_init &&
         M.isReceiverSelfOrSuper()) {
       State = assumeExprIsNonNull(M.getOriginExpr(), State, C);

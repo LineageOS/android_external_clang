@@ -24,7 +24,7 @@ namespace ento {
 SimpleConstraintManager::~SimpleConstraintManager() {}
 
 bool SimpleConstraintManager::canReasonAbout(SVal X) const {
-  nonloc::SymbolVal *SymVal = dyn_cast<nonloc::SymbolVal>(&X);
+  Optional<nonloc::SymbolVal> SymVal = X.getAs<nonloc::SymbolVal>();
   if (SymVal && SymVal->isExpression()) {
     const SymExpr *SE = SymVal->getSymbol();
 
@@ -58,17 +58,16 @@ bool SimpleConstraintManager::canReasonAbout(SVal X) const {
 ProgramStateRef SimpleConstraintManager::assume(ProgramStateRef state,
                                                DefinedSVal Cond,
                                                bool Assumption) {
-  if (isa<NonLoc>(Cond))
-    return assume(state, cast<NonLoc>(Cond), Assumption);
-  else
-    return assume(state, cast<Loc>(Cond), Assumption);
+  if (Optional<NonLoc> NV = Cond.getAs<NonLoc>())
+    return assume(state, *NV, Assumption);
+  return assume(state, Cond.castAs<Loc>(), Assumption);
 }
 
 ProgramStateRef SimpleConstraintManager::assume(ProgramStateRef state, Loc cond,
                                                bool assumption) {
   state = assumeAux(state, cond, assumption);
-  if (NotifyAssumeClients)
-    return SU.processAssume(state, cond, assumption);
+  if (NotifyAssumeClients && SU)
+    return SU->processAssume(state, cond, assumption);
   return state;
 }
 
@@ -82,7 +81,7 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
   case loc::MemRegionKind: {
     // FIXME: Should this go into the storemanager?
 
-    const MemRegion *R = cast<loc::MemRegionVal>(Cond).getRegion();
+    const MemRegion *R = Cond.castAs<loc::MemRegionVal>().getRegion();
     const SubRegion *SubR = dyn_cast<SubRegion>(R);
 
     while (SubR) {
@@ -104,7 +103,7 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
     return Assumption ? state : NULL;
 
   case loc::ConcreteIntKind: {
-    bool b = cast<loc::ConcreteInt>(Cond).getValue() != 0;
+    bool b = Cond.castAs<loc::ConcreteInt>().getValue() != 0;
     bool isFeasible = b ? Assumption : !Assumption;
     return isFeasible ? state : NULL;
   }
@@ -115,7 +114,9 @@ ProgramStateRef SimpleConstraintManager::assume(ProgramStateRef state,
                                                NonLoc cond,
                                                bool assumption) {
   state = assumeAux(state, cond, assumption);
-  return SU.processAssume(state, cond, assumption);
+  if (NotifyAssumeClients && SU)
+    return SU->processAssume(state, cond, assumption);
+  return state;
 }
 
 static BinaryOperator::Opcode NegateComparison(BinaryOperator::Opcode op) {
@@ -138,7 +139,7 @@ ProgramStateRef
 SimpleConstraintManager::assumeAuxForSymbol(ProgramStateRef State,
                                             SymbolRef Sym, bool Assumption) {
   BasicValueFactory &BVF = getBasicVals();
-  QualType T = Sym->getType(BVF.getContext());
+  QualType T = Sym->getType();
 
   // None of the constraint solvers currently support non-integer types.
   if (!T->isIntegerType())
@@ -170,7 +171,7 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
     llvm_unreachable("'Assume' not implemented for this NonLoc");
 
   case nonloc::SymbolValKind: {
-    nonloc::SymbolVal& SV = cast<nonloc::SymbolVal>(Cond);
+    nonloc::SymbolVal SV = Cond.castAs<nonloc::SymbolVal>();
     SymbolRef sym = SV.getSymbol();
     assert(sym);
 
@@ -188,7 +189,7 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
       BinaryOperator::Opcode op = SE->getOpcode();
       // Implicitly compare non-comparison expressions to 0.
       if (!BinaryOperator::isComparisonOp(op)) {
-        QualType T = SE->getType(BasicVals.getContext());
+        QualType T = SE->getType();
         const llvm::APSInt &zero = BasicVals.getValue(0, T);
         op = (Assumption ? BO_NE : BO_EQ);
         return assumeSymRel(state, SE, op, zero);
@@ -202,13 +203,13 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
   }
 
   case nonloc::ConcreteIntKind: {
-    bool b = cast<nonloc::ConcreteInt>(Cond).getValue() != 0;
+    bool b = Cond.castAs<nonloc::ConcreteInt>().getValue() != 0;
     bool isFeasible = b ? Assumption : !Assumption;
     return isFeasible ? state : NULL;
   }
 
   case nonloc::LocAsIntegerKind:
-    return assumeAux(state, cast<nonloc::LocAsInteger>(Cond).getLoc(),
+    return assumeAux(state, Cond.castAs<nonloc::LocAsInteger>().getLoc(),
                      Assumption);
   } // end switch
 }
@@ -237,11 +238,9 @@ ProgramStateRef SimpleConstraintManager::assumeSymRel(ProgramStateRef state,
   assert(BinaryOperator::isComparisonOp(op) &&
          "Non-comparison ops should be rewritten as comparisons to zero.");
 
-  BasicValueFactory &BVF = getBasicVals();
-  ASTContext &Ctx = BVF.getContext();
-
   // Get the type used for calculating wraparound.
-  APSIntType WraparoundType = BVF.getAPSIntType(LHS->getType(Ctx));
+  BasicValueFactory &BVF = getBasicVals();
+  APSIntType WraparoundType = BVF.getAPSIntType(LHS->getType());
 
   // We only handle simple comparisons of the form "$sym == constant"
   // or "($sym+constant1) == constant2".

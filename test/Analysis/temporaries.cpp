@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++03 %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++11 %s
 
 extern bool clang_analyzer_eval(bool);
 
@@ -76,3 +77,83 @@ namespace rdar13281951 {
   }
 }
 
+namespace compound_literals {
+  struct POD {
+    int x, y;
+  };
+  struct HasCtor {
+    HasCtor(int x, int y) : x(x), y(y) {}
+    int x, y;
+  };
+  struct HasDtor {
+    int x, y;
+    ~HasDtor();
+  };
+  struct HasCtorDtor {
+    HasCtorDtor(int x, int y) : x(x), y(y) {}
+    ~HasCtorDtor();
+    int x, y;
+  };
+
+  void test() {
+    clang_analyzer_eval(((POD){1, 42}).y == 42); // expected-warning{{TRUE}}
+    clang_analyzer_eval(((HasDtor){1, 42}).y == 42); // expected-warning{{TRUE}}
+
+#if __cplusplus >= 201103L
+    clang_analyzer_eval(((HasCtor){1, 42}).y == 42); // expected-warning{{TRUE}}
+
+    // FIXME: should be TRUE, but we don't inline the constructors of
+    // temporaries because we can't model their destructors yet.
+    clang_analyzer_eval(((HasCtorDtor){1, 42}).y == 42); // expected-warning{{UNKNOWN}}
+#endif
+  }
+}
+
+namespace destructors {
+  void testPR16664Crash() {
+    struct Dtor {
+      ~Dtor();
+    };
+    extern bool coin();
+    extern bool check(const Dtor &);
+
+    // Don't crash here.
+    if (coin() && (coin() || coin() || check(Dtor()))) {
+      Dtor();
+    }
+  }
+
+  void testConsistency(int i) {
+    struct NoReturnDtor {
+      ~NoReturnDtor() __attribute__((noreturn));
+    };
+    extern bool check(const NoReturnDtor &);
+    
+    if (i == 5 && (i == 4 || i == 5 || check(NoReturnDtor())))
+      clang_analyzer_eval(true); // expected-warning{{TRUE}}
+
+    if (i != 5)
+      return;
+    if (i == 5 && (i == 4 || check(NoReturnDtor()) || i == 5)) {
+      // FIXME: Should be no-warning, because the noreturn destructor should
+      // fire on all paths.
+      clang_analyzer_eval(true); // expected-warning{{TRUE}}
+    }
+  }
+}
+
+void testStaticMaterializeTemporaryExpr() {
+  static const Trivial &ref = getTrivial();
+  clang_analyzer_eval(ref.value == 42); // expected-warning{{TRUE}}
+
+  static const Trivial &directRef = Trivial(42);
+  clang_analyzer_eval(directRef.value == 42); // expected-warning{{TRUE}}
+
+#if __has_feature(cxx_thread_local)
+  thread_local static const Trivial &threadRef = getTrivial();
+  clang_analyzer_eval(threadRef.value == 42); // expected-warning{{TRUE}}
+
+  thread_local static const Trivial &threadDirectRef = Trivial(42);
+  clang_analyzer_eval(threadDirectRef.value == 42); // expected-warning{{TRUE}}
+#endif
+}

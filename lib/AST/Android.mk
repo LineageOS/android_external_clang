@@ -30,6 +30,7 @@ clang_ast_SRC_FILES :=	\
 	ASTDiagnostic.cpp	\
 	ASTDumper.cpp	\
 	ASTImporter.cpp	\
+	ASTTypeTraits.cpp \
 	AttrImpl.cpp	\
 	Comment.cpp \
 	CommentBriefParser.cpp \
@@ -45,6 +46,7 @@ clang_ast_SRC_FILES :=	\
 	DeclFriend.cpp	\
 	DeclGroup.cpp	\
 	DeclObjC.cpp	\
+	DeclOpenMP.cpp	\
 	DeclPrinter.cpp	\
 	DeclTemplate.cpp	\
 	DumpXML.cpp	\
@@ -56,8 +58,8 @@ clang_ast_SRC_FILES :=	\
 	InheritViz.cpp	\
 	ItaniumCXXABI.cpp	\
 	ItaniumMangle.cpp	\
-	LambdaMangleContext.cpp	\
 	Mangle.cpp	\
+	MangleNumberingContext.cpp \
 	MicrosoftCXXABI.cpp	\
 	MicrosoftMangle.cpp	\
 	NestedNameSpecifier.cpp	\

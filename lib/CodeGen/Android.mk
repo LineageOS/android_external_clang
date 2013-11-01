@@ -8,6 +8,7 @@ clang_codegen_TBLGEN_TABLES := \
   DeclNodes.inc \
   DiagnosticCommonKinds.inc \
   DiagnosticFrontendKinds.inc \
+  DiagnosticSemaKinds.inc \
   StmtNodes.inc \
   arm_neon.inc
 
@@ -50,6 +51,7 @@ clang_codegen_SRC_FILES := \
   CodeGenTypes.cpp \
   ItaniumCXXABI.cpp \
   MicrosoftCXXABI.cpp \
+  MicrosoftVBTables.cpp \
   ModuleBuilder.cpp \
   TargetInfo.cpp
 

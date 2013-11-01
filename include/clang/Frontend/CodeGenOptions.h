@@ -71,6 +71,12 @@ public:
     FPC_Fast        // Aggressively fuse FP ops (E.g. FMA).
   };
 
+  enum StructReturnConventionKind {
+    SRCK_Default,  // No special option was passed.
+    SRCK_OnStack,  // Small structs on the stack (-fpcc-struct-return).
+    SRCK_InRegs    // Small structs in registers (-freg-struct-return).
+  };
+
   /// The code model to use (-mcmodel).
   std::string CodeModel;
 
@@ -137,7 +143,7 @@ public:
 #include "clang/Frontend/CodeGenOptions.def"
 
     RelocationModel = "pic";
-    memcpy(CoverageVersion, "*204", 4);
+    memcpy(CoverageVersion, "402*", 4);
   }
 };
 

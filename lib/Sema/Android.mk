@@ -56,6 +56,7 @@ clang_sema_SRC_FILES :=	\
 	SemaLambda.cpp	\
 	SemaLookup.cpp	\
 	SemaObjCProperty.cpp	\
+	SemaOpenMP.cpp	\
 	SemaOverload.cpp	\
 	SemaPseudoObject.cpp	\
 	SemaStmt.cpp	\
@@ -67,7 +68,8 @@ clang_sema_SRC_FILES :=	\
 	SemaTemplateInstantiateDecl.cpp	\
 	SemaTemplateVariadic.cpp	\
 	SemaType.cpp	\
-	TargetAttributesSema.cpp
+	TargetAttributesSema.cpp	\
+	TypeLocBuilder.cpp
 
 LOCAL_SRC_FILES := $(clang_sema_SRC_FILES)
 
